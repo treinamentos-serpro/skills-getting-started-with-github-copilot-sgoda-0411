@@ -1,45 +1,131 @@
-import unittest
 from copy import deepcopy
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src.app import activities, app
 
 
-class UnregisterTests(unittest.TestCase):
-    def setUp(self):
-        self.original_activities = deepcopy(activities)
-        self.client = TestClient(app)
-
-    def tearDown(self):
+@pytest.fixture
+def client():
+    original_activities = deepcopy(activities)
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
         activities.clear()
-        activities.update(self.original_activities)
-        self.client.close()
+        activities.update(original_activities)
 
-    def test_unregister_removes_only_selected_participant(self):
-        email = "michael@mergington.edu"
-        response = self.client.delete(
-            "/activities/Chess%20Club/unregister", params={"email": email}
-        )
-        self.assertEqual(response.status_code, 200)
-        updated = self.client.get("/activities").json()
-        self.assertEqual(updated["Chess Club"]["participants"], ["daniel@mergington.edu"])
-        self.assertEqual(updated["Gym Class"], self.original_activities["Gym Class"])
-        response = self.client.post(
-            "/activities/Chess%20Club/signup", params={"email": email}
-        )
-        self.assertEqual(response.status_code, 200)
 
-    def test_unregister_missing_participant_leaves_data_unchanged(self):
-        response = self.client.delete(
-            "/activities/Chess%20Club/unregister", params={"email": "missing@example.com"}
-        )
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(activities, self.original_activities)
+def test_get_activities_returns_all_activities(client):
+    # Arrange
+    expected_activities = deepcopy(activities)
 
-    def test_unregister_missing_activity_leaves_data_unchanged(self):
-        response = self.client.delete(
-            "/activities/Missing/unregister", params={"email": "michael@mergington.edu"}
-        )
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(activities, self.original_activities)
+    # Act
+    response = client.get("/activities")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == expected_activities
+
+
+def test_signup_adds_participant(client):
+    # Arrange
+    activity_name = "Volleyball Club"
+    email = "new.student@mergington.edu"
+
+    # Act
+    response = client.post(
+        f"/activities/{activity_name}/signup", params={"email": email}
+    )
+    activities_response = client.get("/activities")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {
+        "message": f"Signed up {email} for {activity_name}"
+    }
+    assert email in activities_response.json()[activity_name]["participants"]
+
+
+def test_signup_returns_404_for_missing_activity(client):
+    # Arrange
+    activity_name = "Missing Activity"
+    email = "new.student@mergington.edu"
+    original_activities = deepcopy(activities)
+
+    # Act
+    response = client.post(
+        f"/activities/{activity_name}/signup", params={"email": email}
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert activities == original_activities
+
+
+def test_signup_rejects_duplicate_participant(client):
+    # Arrange
+    activity_name = "Chess Club"
+    email = "michael@mergington.edu"
+    original_participants = deepcopy(activities[activity_name]["participants"])
+
+    # Act
+    response = client.post(
+        f"/activities/{activity_name}/signup", params={"email": email}
+    )
+
+    # Assert
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Student already signed up for this activity"
+    assert activities[activity_name]["participants"] == original_participants
+
+
+def test_unregister_removes_only_selected_participant(client):
+    # Arrange
+    activity_name = "Chess Club"
+    email = "michael@mergington.edu"
+    original_other_activity = deepcopy(activities["Gym Class"])
+
+    # Act
+    response = client.delete(
+        f"/activities/{activity_name}/unregister", params={"email": email}
+    )
+    updated = client.get("/activities").json()
+
+    # Assert
+    assert response.status_code == 200
+    assert updated[activity_name]["participants"] == ["daniel@mergington.edu"]
+    assert updated["Gym Class"] == original_other_activity
+
+
+def test_unregister_returns_404_for_missing_participant(client):
+    # Arrange
+    activity_name = "Chess Club"
+    email = "missing@example.com"
+    original_activities = deepcopy(activities)
+
+    # Act
+    response = client.delete(
+        f"/activities/{activity_name}/unregister", params={"email": email}
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert activities == original_activities
+
+
+def test_unregister_returns_404_for_missing_activity(client):
+    # Arrange
+    activity_name = "Missing Activity"
+    email = "michael@mergington.edu"
+    original_activities = deepcopy(activities)
+
+    # Act
+    response = client.delete(
+        f"/activities/{activity_name}/unregister", params={"email": email}
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert activities == original_activities
